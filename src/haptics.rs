@@ -8,8 +8,57 @@
 //!              of the first 74 bytes in the last 4.
 //! Written from those sources; not verified on real hardware.
 
+use gilrs::Button;
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum TriggerMode { Off, Resist }
+
+/// Controller state read straight from the DualSense's HID input reports. Needed because
+/// Windows' gamepad APIs (which gilrs uses) only expose Xbox-style pads, so without a wrapper
+/// such as Steam Input a DualSense is invisible to gilrs. Sticks are -1..1, up is positive.
+#[derive(Clone, Default, Debug)]
+pub struct PadSnapshot {
+    pub down: Vec<Button>,
+    pub lx: f32,
+    pub ly: f32,
+    pub rx: f32,
+    pub ry: f32,
+}
+
+/// Parse a DualSense input report. Layouts from the Linux kernel / SDL:
+///   USB 0x01 (64 B) and Bluetooth full 0x31 (78 B): sticks/triggers/buttons start at byte 1 / 2.
+///   Bluetooth reduced 0x01 (10 B): different, shorter layout.
+#[allow(dead_code)]
+pub fn parse_report(r: &[u8]) -> Option<PadSnapshot> {
+    let (sticks, b0, b1, b2) = match (r.first()?, r.len()) {
+        (0x31, n) if n >= 12 => (2, r[9], r[10], r[11]),
+        (0x01, n) if n >= 64 => (1, r[8], r[9], r[10]),
+        (0x01, n) if n >= 10 => (1, r[5], r[6], r[7]), // reduced BT report
+        _ => return None,
+    };
+    let ax = |i: usize| ((r[sticks + i] as f32 - 128.0) / 127.0).clamp(-1.0, 1.0);
+    let mut s = PadSnapshot { lx: ax(0), ly: -ax(1), rx: ax(2), ry: -ax(3), down: Vec::new() };
+    let mut set = |on: bool, b: Button| if on { s.down.push(b); };
+    let hat = b0 & 0x0F;
+    set(matches!(hat, 7 | 0 | 1), Button::DPadUp);
+    set(matches!(hat, 1 | 2 | 3), Button::DPadRight);
+    set(matches!(hat, 3 | 4 | 5), Button::DPadDown);
+    set(matches!(hat, 5 | 6 | 7), Button::DPadLeft);
+    set(b0 & 0x10 != 0, Button::West);   // square
+    set(b0 & 0x20 != 0, Button::South);  // cross
+    set(b0 & 0x40 != 0, Button::East);   // circle
+    set(b0 & 0x80 != 0, Button::North);  // triangle
+    set(b1 & 0x01 != 0, Button::LeftTrigger);
+    set(b1 & 0x02 != 0, Button::RightTrigger);
+    set(b1 & 0x04 != 0, Button::LeftTrigger2);
+    set(b1 & 0x08 != 0, Button::RightTrigger2);
+    set(b1 & 0x10 != 0, Button::Select);
+    set(b1 & 0x20 != 0, Button::Start);
+    set(b1 & 0x40 != 0, Button::LeftThumb);
+    set(b1 & 0x80 != 0, Button::RightThumb);
+    set(b2 & 0x01 != 0, Button::Mode);
+    Some(s)
+}
 
 pub struct Haptics {
     vibration: bool,
@@ -68,6 +117,9 @@ impl Haptics {
 
     pub fn connected(&self) -> bool { self.backend.connected() }
 
+    /// Latest controller state from the HID link, or `None` if no DualSense is open.
+    pub fn read_pad(&mut self) -> Option<PadSnapshot> { self.backend.read_pad() }
+
     /// Human-readable reason/state of the DualSense HID link (for the settings screen).
     pub fn status(&self) -> String { self.backend.status() }
 }
@@ -82,10 +134,11 @@ impl Drop for Haptics {
 // ───────────────────────────── HID backend ────────────────────────────
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod backend {
-    use super::TriggerMode;
+    use super::{parse_report, PadSnapshot, TriggerMode};
     use hidapi::{BusType, HidApi, HidDevice};
 
     pub struct Backend {
+        pad: Option<PadSnapshot>,
         api: Option<HidApi>,
         dev: Option<HidDevice>,
         bluetooth: bool,
@@ -132,10 +185,26 @@ mod backend {
 
     impl Backend {
         pub fn new() -> Self {
-            Self { api: None, dev: None, bluetooth: false, seq: 0, retry: 0.0, since_send: 0.0, last: (0, 0, TriggerMode::Off), force: false, status: "searching...".into() }
+            Self { pad: None, api: None, dev: None, bluetooth: false, seq: 0, retry: 0.0, since_send: 0.0, last: (0, 0, TriggerMode::Off), force: false, status: "searching...".into() }
         }
 
         pub fn connected(&self) -> bool { self.dev.is_some() }
+
+        /// Drain pending input reports (non-blocking) and return the most recent state.
+        pub fn read_pad(&mut self) -> Option<PadSnapshot> {
+            let Some(dev) = self.dev.as_ref() else { self.pad = None; return None };
+            let mut buf = [0u8; 128];
+            loop {
+                match dev.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => { if let Some(p) = parse_report(&buf[..n]) { self.pad = Some(p); } }
+                    Err(_) => { self.dev = None; self.pad = None; self.last = (0, 0, TriggerMode::Off); return None; }
+                }
+            }
+            if self.pad.is_none() { self.pad = Some(PadSnapshot::default()); } // open, nothing pressed yet
+            self.pad.clone()
+        }
+
         pub fn status(&self) -> String { self.status.clone() }
 
         fn open(&mut self) {
@@ -258,10 +327,11 @@ mod backend {
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 mod backend {
-    use super::TriggerMode;
+    use super::{PadSnapshot, TriggerMode};
     pub fn diagnose() -> Vec<String> { vec!["  (HID not supported on this OS)".into()] }
     pub struct Backend;
     impl Backend {
+        pub fn read_pad(&mut self) -> Option<PadSnapshot> { None }
         pub fn new() -> Self { Backend }
         pub fn connected(&self) -> bool { false }
         pub fn status(&self) -> String { "not supported on this OS".into() }
@@ -276,5 +346,27 @@ mod tests {
     fn crc32_matches_standard_check_value() {
         // CRC-32/ISO-HDLC check value for "123456789"
         assert_eq!(super::backend::crc32(0, b"123456789"), 0xCBF4_3926);
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_usb_and_bluetooth_reports() {
+        let mut usb = [0u8; 64];
+        usb[0] = 0x01; usb[1] = 255; usb[2] = 0; // left stick full right, full up
+        usb[8] = 0x20 | 0x02; // cross + hat east
+        usb[9] = 0x20;        // options
+        let p = parse_report(&usb).unwrap();
+        assert!(p.lx > 0.99 && p.ly > 0.99);
+        assert!(p.down.contains(&Button::South) && p.down.contains(&Button::DPadRight) && p.down.contains(&Button::Start));
+        assert!(!p.down.contains(&Button::DPadUp));
+
+        let mut bt = [0u8; 78];
+        bt[0] = 0x31; bt[2] = 128; bt[9] = 0x08; bt[10] = 0x08; // hat released, R2
+        let p = parse_report(&bt).unwrap();
+        assert!(p.lx.abs() < 0.01 && p.down == vec![Button::RightTrigger2]);
     }
 }

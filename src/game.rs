@@ -79,12 +79,23 @@ impl Game {
     /// Print what the OS and gilrs/hidapi see, then listen for gamepad events (`--diagnose`).
     pub fn diagnose(&mut self) {
         println!("gilrs gamepads:");
-        self.input.poll(&self.view);
+        let pad = self.haptics.read_pad();
+        self.input.poll(&self.view, pad);
         for l in self.input.diagnose() { println!("{l}"); }
         println!("HID devices (Sony / gamepad-like):");
         for l in crate::haptics::diagnose() { println!("{l}"); }
         println!("Listening for gamepad events for 10 s - press buttons now...");
-        self.input.log_events(10.0);
+        self.haptics.update(0.0); // opens the DualSense
+        println!("  DualSense HID: {}", self.haptics.status());
+        let start = std::time::Instant::now();
+        let mut last = String::new();
+        while start.elapsed().as_secs_f64() < 10.0 {
+            if let Some(p) = self.haptics.read_pad() {
+                let now = format!("{:?} L({:.2},{:.2}) R({:.2},{:.2})", p.down, p.lx, p.ly, p.rx, p.ry);
+                if now != last { println!("  hid: {now}"); last = now; }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         println!("done.");
     }
 
@@ -112,7 +123,8 @@ impl Game {
             self.gfx.save();
             self.gfx.apply_window();
         }
-        self.input.poll(&self.view);
+        let pad = self.haptics.read_pad();
+        self.input.poll(&self.view, pad);
         self.nav.poll(&self.input);
         self.update(dt);
         self.update_feedback(dt);

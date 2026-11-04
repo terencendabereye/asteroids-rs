@@ -2,6 +2,7 @@
 //! menu navigation that can never be remapped away. Gamepads come from `gilrs` (pure Rust).
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 use crate::graphics::View;
+use crate::haptics::PadSnapshot;
 use macroquad::prelude::*;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -108,6 +109,7 @@ pub struct Input {
     gilrs: Option<Gilrs>,
     pad: Option<GamepadId>,
     pressed: Vec<Button>, // buttons that went down this frame
+    hid: Option<PadSnapshot>, // DualSense read directly over HID (gilrs can't see it on Windows)
     bindings: [Binding; 9],
     pub aim: AimMode,
     pub vibration: bool,
@@ -140,6 +142,7 @@ impl Input {
             gilrs: Gilrs::new().ok(), // no gamepad subsystem is not fatal
             pad: None,
             pressed: Vec::new(),
+            hid: None,
             bindings: default_bindings(),
             aim: AimMode::Keys,
             vibration: true,
@@ -155,7 +158,7 @@ impl Input {
     }
 
     /// Call once per frame: pumps gamepad events and records this frame's button presses.
-    pub fn poll(&mut self, view: &View) {
+    pub fn poll(&mut self, view: &View, hid: Option<PadSnapshot>) {
         let (mx, my) = mouse_position();
         let m = view.to_world(Vec2::new(mx, my));
         self.mouse_moved = m.distance(self.mouse) > 0.5;
@@ -178,12 +181,20 @@ impl Input {
                 self.pad = g.gamepads().find(|(_, gp)| gp.is_connected()).map(|(id, _)| id);
             }
         }
+        if let Some(h) = &hid {
+            let prev = self.hid.as_ref();
+            for b in &h.down {
+                if !prev.map_or(false, |p| p.down.contains(b)) { self.pressed.push(*b); }
+            }
+        }
+        self.hid = hid;
     }
 
-    pub fn pad_available(&self) -> bool { self.pad.is_some() }
+    pub fn pad_available(&self) -> bool { self.pad.is_some() || self.hid.is_some() }
 
     /// One-line description of the gamepad as the OS/gilrs sees it (for the settings screen).
     pub fn pad_status(&self) -> String {
+        if self.pad.is_none() && self.hid.is_some() { return "DualSense via direct HID".into(); }
         let Some(g) = &self.gilrs else { return "gamepad subsystem failed to start".into() };
         match self.pad {
             None => "none detected".into(),
@@ -229,9 +240,13 @@ impl Input {
     }
 
     fn pad_down(&self, b: Button) -> bool {
-        match (&self.gilrs, self.pad) { (Some(g), Some(id)) => g.gamepad(id).is_pressed(b), _ => false }
+        self.hid.as_ref().map_or(false, |h| h.down.contains(&b))
+            || match (&self.gilrs, self.pad) { (Some(g), Some(id)) => g.gamepad(id).is_pressed(b), _ => false }
     }
     fn axis(&self, a: Axis) -> f32 {
+        if let (Some(h), None) = (&self.hid, self.pad) {
+            return match a { Axis::LeftStickX => h.lx, Axis::LeftStickY => h.ly, Axis::RightStickX => h.rx, Axis::RightStickY => h.ry, _ => 0.0 };
+        }
         match (&self.gilrs, self.pad) { (Some(g), Some(id)) => g.gamepad(id).value(a), _ => 0.0 }
     }
     pub fn pad_pressed(&self, b: Button) -> bool { self.pressed.contains(&b) }
