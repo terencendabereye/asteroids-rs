@@ -76,6 +76,18 @@ impl Game {
     }
 
     /// One frame. Returns false when the game wants to quit.
+    /// Print what the OS and gilrs/hidapi see, then listen for gamepad events (`--diagnose`).
+    pub fn diagnose(&mut self) {
+        println!("gilrs gamepads:");
+        self.input.poll(&self.view);
+        for l in self.input.diagnose() { println!("{l}"); }
+        println!("HID devices (Sony / gamepad-like):");
+        for l in crate::haptics::diagnose() { println!("{l}"); }
+        println!("Listening for gamepad events for 10 s - press buttons now...");
+        self.input.log_events(10.0);
+        println!("done.");
+    }
+
     pub fn max_fps(&self) -> u32 { self.gfx.max_fps_value() }
 
     /// Jump straight to a screen (used by the `--scene` screenshot option).
@@ -273,6 +285,11 @@ impl Game {
             Page::Controls => (34.0, 90.0, "CONTROLS",
                 "ENTER / A / click: change    ESC / B: back    Move keys: stick / mouse aim"),
             Page::Graphics => (40.0, 90.0, "GRAPHICS", "ENTER / A / click: change    F11: fullscreen    ESC / B: back"),
+        };
+        self.settings.status = if self.page == Page::Controls {
+            vec![format!("Gamepad: {}", self.input.pad_status()), format!("DualSense HID: {}", self.haptics.status())]
+        } else {
+            Vec::new()
         };
         self.settings.title = title.into();
         self.settings.hint = hint.into();

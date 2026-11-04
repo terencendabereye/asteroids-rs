@@ -182,6 +182,52 @@ impl Input {
 
     pub fn pad_available(&self) -> bool { self.pad.is_some() }
 
+    /// One-line description of the gamepad as the OS/gilrs sees it (for the settings screen).
+    pub fn pad_status(&self) -> String {
+        let Some(g) = &self.gilrs else { return "gamepad subsystem failed to start".into() };
+        match self.pad {
+            None => "none detected".into(),
+            Some(id) => {
+                let gp = g.gamepad(id);
+                let ids = match (gp.vendor_id(), gp.product_id()) { (Some(v), Some(p)) => format!(" [{v:04x}:{p:04x}]"), _ => String::new() };
+                let map = match gp.mapping_source() {
+                    gilrs::MappingSource::SdlMappings => "mapped",
+                    gilrs::MappingSource::Driver => "driver layout",
+                    gilrs::MappingSource::None => "NO MAPPING - buttons won't match",
+                };
+                format!("{}{ids} - {map}", gp.name())
+            }
+        }
+    }
+
+    /// Everything gilrs knows about connected pads, for `--diagnose`.
+    pub fn diagnose(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        let Some(g) = self.gilrs.as_mut() else { return vec!["  gilrs failed to initialise".into()] };
+        let mut n = 0;
+        for (id, gp) in g.gamepads() {
+            n += 1;
+            out.push(format!(
+                "  #{id}: \"{}\" (os name \"{}\") vid/pid {:?}/{:?} mapping {:?} connected {}",
+                gp.name(), gp.os_name(), gp.vendor_id(), gp.product_id(), gp.mapping_source(), gp.is_connected()
+            ));
+        }
+        if n == 0 { out.push("  (gilrs sees no gamepads)".into()); }
+        out
+    }
+
+    /// Print gilrs events for a few seconds so you can see whether presses arrive at all.
+    pub fn log_events(&mut self, seconds: f64) {
+        let Some(g) = self.gilrs.as_mut() else { return };
+        let start = std::time::Instant::now();
+        while start.elapsed().as_secs_f64() < seconds {
+            while let Some(ev) = g.next_event() {
+                if !matches!(ev.event, EventType::AxisChanged(..)) { println!("  event: {:?}", ev.event); }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     fn pad_down(&self, b: Button) -> bool {
         match (&self.gilrs, self.pad) { (Some(g), Some(id)) => g.gamepad(id).is_pressed(b), _ => false }
     }

@@ -67,7 +67,13 @@ impl Haptics {
     }
 
     pub fn connected(&self) -> bool { self.backend.connected() }
+
+    /// Human-readable reason/state of the DualSense HID link (for the settings screen).
+    pub fn status(&self) -> String { self.backend.status() }
 }
+
+/// Lists HID devices relevant to controllers (used by `--diagnose`).
+pub fn diagnose() -> Vec<String> { backend::diagnose() }
 
 impl Drop for Haptics {
     fn drop(&mut self) { self.shutdown(); }
@@ -88,6 +94,7 @@ mod backend {
         since_send: f32,
         last: (u8, u8, TriggerMode),
         force: bool,
+        status: String,
     }
 
     pub(super) fn crc32(mut crc: u32, data: &[u8]) -> u32 {
@@ -101,30 +108,74 @@ mod backend {
         !crc
     }
 
+    pub fn diagnose() -> Vec<String> {
+        let mut out = Vec::new();
+        match HidApi::new() {
+            Err(e) => out.push(format!("hidapi init failed: {e}")),
+            Ok(api) => {
+                let mut n = 0;
+                for d in api.device_list() {
+                    if d.vendor_id() == 0x054C || d.usage_page() == 0x01 && matches!(d.usage(), 0x04 | 0x05) {
+                        n += 1;
+                        out.push(format!(
+                            "  {:04x}:{:04x} usage {:04x}/{:04x} bus {:?} product {:?} path {:?}",
+                            d.vendor_id(), d.product_id(), d.usage_page(), d.usage(), d.bus_type(),
+                            d.product_string().unwrap_or("?"), d.path()
+                        ));
+                    }
+                }
+                if n == 0 { out.push("  (no gamepad-like or Sony HID devices visible)".into()); }
+            }
+        }
+        out
+    }
+
     impl Backend {
         pub fn new() -> Self {
-            Self { api: None, dev: None, bluetooth: false, seq: 0, retry: 0.0, since_send: 0.0, last: (0, 0, TriggerMode::Off), force: false }
+            Self { api: None, dev: None, bluetooth: false, seq: 0, retry: 0.0, since_send: 0.0, last: (0, 0, TriggerMode::Off), force: false, status: "searching...".into() }
         }
 
         pub fn connected(&self) -> bool { self.dev.is_some() }
+        pub fn status(&self) -> String { self.status.clone() }
 
         fn open(&mut self) {
             match self.api.as_mut() {
                 Some(api) => { let _ = api.refresh_devices(); }
-                None => self.api = HidApi::new().ok(),
+                None => match HidApi::new() {
+                    Ok(api) => self.api = Some(api),
+                    Err(e) => { self.status = format!("HID unavailable: {e}"); return; }
+                },
             }
             let Some(api) = self.api.as_ref() else { return };
+            let mut sony = 0;
+            let mut matched = 0;
+            let mut open_err = String::new();
             for info in api.device_list() {
-                if info.vendor_id() != 0x054C || !matches!(info.product_id(), 0x0CE6 | 0x0DF2) { continue; } // DualSense / Edge
+                if info.vendor_id() != 0x054C { continue; }
+                sony += 1;
+                if !matches!(info.product_id(), 0x0CE6 | 0x0DF2) { continue; } // DualSense / Edge
                 let any_usage = info.usage_page() == 0 && info.usage() == 0;
                 if !any_usage && !(info.usage_page() == 0x01 && info.usage() == 0x05) { continue; } // gamepad collection
-                if let Ok(dev) = api.open_path(info.path()) {
-                    let _ = dev.set_blocking_mode(false);
-                    self.bluetooth = matches!(info.bus_type(), BusType::Bluetooth);
-                    self.dev = Some(dev);
-                    break;
+                matched += 1;
+                match api.open_path(info.path()) {
+                    Ok(dev) => {
+                        let _ = dev.set_blocking_mode(false);
+                        self.bluetooth = matches!(info.bus_type(), BusType::Bluetooth);
+                        self.dev = Some(dev);
+                        break;
+                    }
+                    Err(e) => open_err = e.to_string(),
                 }
             }
+            self.status = if self.dev.is_some() {
+                format!("connected ({})", if self.bluetooth { "Bluetooth" } else { "USB" })
+            } else if matched > 0 {
+                format!("found, but open failed: {open_err} (another app, e.g. Steam, may hold it)")
+            } else if sony > 0 {
+                format!("{sony} Sony HID interface(s) seen, none is a DualSense gamepad")
+            } else {
+                "no Sony HID device visible to this OS".to_string()
+            };
             if let Some(dev) = self.dev.as_ref() {
                 if self.bluetooth {
                     // Over Bluetooth the pad starts in a reduced mode; reading the calibration
@@ -208,10 +259,12 @@ mod backend {
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 mod backend {
     use super::TriggerMode;
+    pub fn diagnose() -> Vec<String> { vec!["  (HID not supported on this OS)".into()] }
     pub struct Backend;
     impl Backend {
         pub fn new() -> Self { Backend }
         pub fn connected(&self) -> bool { false }
+        pub fn status(&self) -> String { "not supported on this OS".into() }
         pub fn tick(&mut self, _dt: f32, _h: u8, _l: u8, _m: TriggerMode) {}
         pub fn shutdown(&mut self) {}
     }

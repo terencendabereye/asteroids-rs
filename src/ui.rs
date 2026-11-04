@@ -72,6 +72,8 @@ pub struct Menu {
     pub rows: Vec<Row>,
     pub selected: usize,
     pub hint: String,
+    /// Extra info lines drawn above the hint (e.g. controller status).
+    pub status: Vec<String>,
     /// Vertical distance between rows, and from the title to the first row.
     pub spacing: f32,
     pub first_row: f32,
@@ -86,6 +88,7 @@ impl Menu {
             rows: labels.iter().map(|l| Row::label(l)).collect(),
             selected: 0,
             hint: String::new(),
+            status: Vec::new(),
             spacing: 44.0,
             first_row: 100.0,
             position: Vec2::new(SCREEN_W / 2.0, y),
@@ -144,6 +147,9 @@ impl Drawable for Menu {
             } else {
                 draw_centered(&r.a, y, 28.0, col);
             }
+        }
+        for (i, line) in self.status.iter().enumerate() {
+            draw_centered(line, SCREEN_H - 100.0 + i as f32 * 22.0, 16.0, Color::from_rgba(80, 120, 160, 255));
         }
         if !self.hint.is_empty() { draw_centered(&self.hint, SCREEN_H - 50.0, 18.0, GRAY); }
     }

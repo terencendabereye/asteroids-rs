@@ -40,7 +40,7 @@ impl FrameLimiter {
     }
 }
 
-/// Developer options: `--screenshot out.png [--scene title|play|ufo|pause|settings|controls|graphics] [--frames N]`
+/// Developer options: `--diagnose` prints controller detection info; `--screenshot out.png [--scene title|play|ufo|pause|settings|controls|graphics] [--frames N]`
 struct Shot {
     path: String,
     scene: String,
@@ -64,6 +64,10 @@ async fn main() {
     macroquad::rand::srand((get_time() * 1_000_000.0) as u64 ^ 0x9E37_79B9);
     let shot = parse_args();
     let mut game = game::Game::new(graphics::Graphics::load());
+    if std::env::args().any(|a| a == "--diagnose") {
+        game.diagnose();
+        return;
+    }
     if let Some(s) = &shot {
         game.debug_scene(&s.scene);
     }
