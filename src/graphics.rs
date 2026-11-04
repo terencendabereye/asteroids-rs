@@ -99,6 +99,9 @@ impl View {
 
     pub fn camera(&self) -> Camera2D {
         let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, SCREEN_W, SCREEN_H));
+        // from_display_rect assumes a y-up target, but macroquad already flips y for the screen
+        // (see Camera2D::matrix), which drew everything upside down. Un-flip it.
+        cam.zoom.y = -cam.zoom.y;
         cam.viewport = Some((
             self.offset.x.round() as i32,
             self.offset.y.round() as i32,
@@ -112,6 +115,16 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_maps_game_space_y_down() {
+        use macroquad::camera::Camera;
+        let m = View::fit(SCREEN_W, SCREEN_H).camera().matrix();
+        let top = m.project_point3(vec3(SCREEN_W / 2.0, 0.0, 0.0));
+        let bottom = m.project_point3(vec3(SCREEN_W / 2.0, SCREEN_H, 0.0));
+        // game y=0 (top of the screen) must land at clip y=+1, y=H at clip y=-1
+        assert!((top.y - 1.0).abs() < 1e-4 && (bottom.y + 1.0).abs() < 1e-4, "{} {}", top.y, bottom.y);
+    }
 
     #[test]
     fn view_letterboxes_and_maps_mouse_positions() {
