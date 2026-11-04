@@ -2,14 +2,53 @@
 use crate::input::MenuNav;
 use crate::objects::{Drawable, GameObject, SCREEN_H, SCREEN_W};
 use macroquad::prelude::*;
+use std::cell::RefCell;
+
+// Text is rasterised at the real pixel size of the offscreen scene (see post.rs) from a vector
+// font, so it stays sharp at any window size instead of being a small bitmap scaled up.
+thread_local! {
+    static TEXT: RefCell<TextCtx> = RefCell::new(TextCtx { font: None, scale: 1.0 });
+}
+
+struct TextCtx {
+    font: Option<Font>,
+    scale: f32, // scene pixels per game unit
+}
+
+const FONT_BYTES: &[u8] = include_bytes!("../assets/ShareTechMono-Regular.ttf");
+
+pub fn init_text() {
+    TEXT.with(|t| t.borrow_mut().font = load_ttf_font_from_bytes(FONT_BYTES).ok());
+}
+
+pub fn set_text_scale(scale: f32) {
+    TEXT.with(|t| t.borrow_mut().scale = scale);
+}
+
+/// (rasterised pixel size, world-space scale) for a text height given in game units.
+fn text_metrics(size: f32, scale: f32) -> (u16, f32) {
+    let px = (size * scale).round().max(1.0);
+    (px as u16, size / px)
+}
 
 /// Draw text with its top edge at `y` (macroquad's own `y` is the baseline).
 pub fn draw_text_top(text: &str, x: f32, y: f32, size: f32, color: Color) {
-    draw_text(text, x, y + size * 0.8, size, color);
+    TEXT.with(|t| {
+        let t = t.borrow();
+        let (px, fs) = text_metrics(size, t.scale);
+        // Snap to the scene's pixel grid so glyph edges land on whole pixels.
+        let snap = |v: f32| (v * t.scale).round() / t.scale;
+        let params = TextParams { font: t.font.as_ref(), font_size: px, font_scale: fs, color, ..Default::default() };
+        draw_text_ex(text, snap(x), snap(y + size * 0.78), params);
+    });
 }
 
 pub fn text_width(text: &str, size: f32) -> f32 {
-    measure_text(text, None, size as u16, 1.0).width
+    TEXT.with(|t| {
+        let t = t.borrow();
+        let (px, fs) = text_metrics(size, t.scale);
+        measure_text(text, t.font.as_ref(), px, fs).width
+    })
 }
 
 pub fn draw_centered(text: &str, y: f32, size: f32, color: Color) {

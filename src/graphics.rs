@@ -9,18 +9,29 @@ const FILE: &str = "graphics.cfg";
 /// Window size presets (multiples of the 1000x750 game space).
 pub const WINDOW_SCALES: [f32; 4] = [0.8, 1.0, 1.25, 1.5];
 
+/// Frame-rate caps; 0 = unlimited.
+pub const MAX_FPS: [u32; 7] = [30, 60, 120, 144, 165, 240, 0];
+pub const LEVEL_NAMES: [&str; 4] = ["Off", "Low", "Medium", "High"];
+
 #[derive(Clone, Copy)]
 pub struct Graphics {
     pub fullscreen: bool,
     pub window_scale: usize, // index into WINDOW_SCALES
     pub vsync: bool,         // applied at startup
-    pub antialiasing: bool,  // applied at startup (4x MSAA)
+    pub antialiasing: bool,  // 2x supersampling of the scene
     pub show_fps: bool,
+    pub max_fps: usize,   // index into MAX_FPS
+    pub bloom: usize,     // 0..=3
+    pub curvature: usize, // 0..=3 (CRT warp)
+    pub scanlines: usize, // 0..=3
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Self { fullscreen: false, window_scale: 1, vsync: true, antialiasing: true, show_fps: false }
+        Self {
+            fullscreen: false, window_scale: 1, vsync: true, antialiasing: true, show_fps: false,
+            max_fps: 1, bloom: 2, curvature: 1, scanlines: 1,
+        }
     }
 }
 
@@ -29,7 +40,13 @@ impl Graphics {
         let mut g = Self::default();
         let Ok(text) = std::fs::read_to_string(FILE) else { return g };
         let v: Vec<i32> = text.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-        if v.len() == 5 {
+        if v.len() == 9 {
+            g.max_fps = (v[5].max(0) as usize).min(MAX_FPS.len() - 1);
+            g.bloom = (v[6].max(0) as usize).min(3);
+            g.curvature = (v[7].max(0) as usize).min(3);
+            g.scanlines = (v[8].max(0) as usize).min(3);
+        }
+        if v.len() == 5 || v.len() == 9 {
             g.fullscreen = v[0] != 0;
             g.window_scale = (v[1].max(0) as usize).min(WINDOW_SCALES.len() - 1);
             g.vsync = v[2] != 0;
@@ -42,9 +59,21 @@ impl Graphics {
     pub fn save(&self) {
         let _ = std::fs::write(
             FILE,
-            format!("{} {} {} {} {}\n", self.fullscreen as i32, self.window_scale, self.vsync as i32, self.antialiasing as i32, self.show_fps as i32),
+            format!(
+                "{} {} {} {} {} {} {} {} {}\n",
+                self.fullscreen as i32, self.window_scale, self.vsync as i32, self.antialiasing as i32, self.show_fps as i32,
+                self.max_fps, self.bloom, self.curvature, self.scanlines
+            ),
         );
     }
+
+    pub fn max_fps_value(&self) -> u32 { MAX_FPS[self.max_fps] }
+    pub fn max_fps_label(&self) -> String {
+        match self.max_fps_value() { 0 => "Unlimited".into(), n => format!("{n}") }
+    }
+    pub fn bloom_amount(&self) -> f32 { [0.0, 0.35, 0.65, 1.1][self.bloom] }
+    pub fn curvature_amount(&self) -> f32 { [0.0, 0.08, 0.16, 0.3][self.curvature] }
+    pub fn scanline_amount(&self) -> f32 { [0.0, 0.18, 0.35, 0.55][self.scanlines] }
 
     pub fn window_size(&self) -> (f32, f32) {
         let s = WINDOW_SCALES[self.window_scale];
@@ -65,7 +94,6 @@ impl Graphics {
             window_height: h as i32,
             window_resizable: true,
             fullscreen: self.fullscreen,
-            sample_count: if self.antialiasing { 4 } else { 1 },
             platform: Platform { swap_interval: Some(if self.vsync { 1 } else { 0 }), ..Default::default() },
             ..Default::default()
         }
@@ -96,35 +124,11 @@ impl View {
 
     /// Window pixel position -> game-space position.
     pub fn to_world(&self, p: Vec2) -> Vec2 { (p - self.offset) / self.scale }
-
-    pub fn camera(&self) -> Camera2D {
-        let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, SCREEN_W, SCREEN_H));
-        // from_display_rect assumes a y-up target, but macroquad already flips y for the screen
-        // (see Camera2D::matrix), which drew everything upside down. Un-flip it.
-        cam.zoom.y = -cam.zoom.y;
-        cam.viewport = Some((
-            self.offset.x.round() as i32,
-            self.offset.y.round() as i32,
-            (SCREEN_W * self.scale).round() as i32,
-            (SCREEN_H * self.scale).round() as i32,
-        ));
-        cam
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn camera_maps_game_space_y_down() {
-        use macroquad::camera::Camera;
-        let m = View::fit(SCREEN_W, SCREEN_H).camera().matrix();
-        let top = m.project_point3(vec3(SCREEN_W / 2.0, 0.0, 0.0));
-        let bottom = m.project_point3(vec3(SCREEN_W / 2.0, SCREEN_H, 0.0));
-        // game y=0 (top of the screen) must land at clip y=+1, y=H at clip y=-1
-        assert!((top.y - 1.0).abs() < 1e-4 && (bottom.y + 1.0).abs() < 1e-4, "{} {}", top.y, bottom.y);
-    }
 
     #[test]
     fn view_letterboxes_and_maps_mouse_positions() {

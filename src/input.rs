@@ -20,7 +20,7 @@ impl Action {
             Action::Thrust => "Accelerate",
             Action::Brake => "Brake",
             Action::Fire => "Fire",
-            Action::MoveUp => "Move Up (stick/mouse aim)",
+            Action::MoveUp => "Move Up",
             Action::MoveDown => "Move Down",
             Action::MoveLeft => "Move Left",
             Action::MoveRight => "Move Right",

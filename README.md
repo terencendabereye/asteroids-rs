@@ -31,7 +31,15 @@ For DualSense feedback on Linux the pad's hidraw node must be accessible to your
 Menus work entirely with the mouse: hover highlights a row, click activates it (settings rows toggle/cycle on click, a click on a controls row starts a rebind), the wheel moves the selection and right-click goes back. Keyboard and gamepad navigation still work.
 
 ## Graphics (Settings -> Graphics, saved to `graphics.cfg`)
-Fullscreen, window size (0.8x / 1x / 1.25x / 1.5x), VSync and anti-aliasing (both apply on restart) and an FPS counter. The window is resizable; the 4:3 game is scaled and letterboxed to fit, so fullscreen on a wide monitor shows black bars rather than stretching.
+The whole game, UI included, is drawn into an offscreen target at the window's real resolution and presented through a CRT shader, so lines and text stay sharp at any size (text is rasterised from a vector font at the actual pixel size).
+- **Bloom / glow**, **CRT warp** (barrel curvature, vignette, slight chromatic aberration) and **scanlines** - each Off / Low / Medium / High.
+- **Anti-aliasing** - 2x supersampling of the scene.
+- **Max FPS** - 30, 60, 120, 144, 165, 240 or Unlimited, enforced by a frame limiter. **VSync** (applies on restart) ties the game to the display's refresh rate, so turn it off to go above it.
+- Fullscreen (also F11), window size (0.8x - 1.5x), FPS counter. The window is resizable; the 4:3 game is scaled and letterboxed to fit.
+
+Developer option: `asteroids --screenshot out.png [--scene title|play|ufo|pause|settings|controls|graphics] [--frames N]` renders a frame to a PNG and exits.
+
+Font: [Share Tech Mono](https://fonts.google.com/specimen/Share+Tech+Mono) (SIL Open Font License, see `assets/OFL.txt`).
 
 ## Class hierarchy
 Rust has no class inheritance, so the tree is a chain of traits - each a supertrait of the one above - with shared state in a `RigidBody` struct (`src/objects.rs`):

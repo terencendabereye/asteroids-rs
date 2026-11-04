@@ -1,5 +1,7 @@
 use crate::graphics::{Graphics, View};
+use crate::graphics::{LEVEL_NAMES};
 use crate::haptics::{Haptics, TriggerMode};
+use crate::post::PostFx;
 use crate::input::{key_name, button_name, AimMode, Input, MenuNav, ACTIONS};
 use crate::objects::*;
 use crate::ui::*;
@@ -44,6 +46,7 @@ pub struct Game {
     haptics: Haptics,
     cursor_hidden: bool,
     gfx: Graphics,
+    post: PostFx,
     view: View,
     page: Page,
 }
@@ -63,14 +66,32 @@ impl Game {
             haptics: Haptics::new(),
             cursor_hidden: false,
             gfx,
+            post: PostFx::new(),
             view: View::fit(SCREEN_W, SCREEN_H),
             page: Page::Hub,
         };
+        init_text();
         g.show_title();
         g
     }
 
     /// One frame. Returns false when the game wants to quit.
+    pub fn max_fps(&self) -> u32 { self.gfx.max_fps_value() }
+
+    /// Jump straight to a screen (used by the `--scene` screenshot option).
+    pub fn debug_scene(&mut self, scene: &str) {
+        match scene {
+            "play" => self.start_game(Mode::Classic),
+            "ufo" => self.start_game(Mode::Ufo),
+            "pause" => { self.start_game(Mode::Classic); self.state = State::Paused; }
+            "settings" | "controls" | "graphics" => {
+                self.open_settings(State::Title);
+                match scene { "controls" => self.set_page(Page::Controls), "graphics" => self.set_page(Page::Graphics), _ => {} }
+            }
+            _ => {}
+        }
+    }
+
     pub fn frame(&mut self) -> bool {
         let dt = get_frame_time().min(0.05);
         self.view = View::fit(screen_width(), screen_height());
@@ -250,8 +271,8 @@ impl Game {
         let (spacing, first_row, title, hint) = match self.page {
             Page::Hub => (44.0, 100.0, "SETTINGS", "Click, or ENTER / A to open    ESC / B / right-click: back"),
             Page::Controls => (34.0, 90.0, "CONTROLS",
-                "ENTER / A / click: change    ESC / B: back    Move keys are used with stick / mouse aim    (ESC cancels a rebind)"),
-            Page::Graphics => (44.0, 100.0, "GRAPHICS", "ENTER / A / click: change    F11: fullscreen anywhere    ESC / B: back"),
+                "ENTER / A / click: change    ESC / B: back    Move keys: stick / mouse aim"),
+            Page::Graphics => (40.0, 90.0, "GRAPHICS", "ENTER / A / click: change    F11: fullscreen    ESC / B: back"),
         };
         self.settings.title = title.into();
         self.settings.hint = hint.into();
@@ -280,11 +301,17 @@ impl Game {
                 rows.push(Row::label("Back"));
             }
             Page::Graphics => {
-                rows.push(Row::table("Fullscreen", on_off(self.gfx.fullscreen), "F11"));
-                rows.push(Row::table("Window size", &self.gfx.window_size_label(), if self.gfx.fullscreen { "(windowed only)" } else { " " }));
-                rows.push(Row::table("VSync", on_off(self.gfx.vsync), "applies on restart"));
-                rows.push(Row::table("Anti-aliasing", on_off(self.gfx.antialiasing), "applies on restart"));
-                rows.push(Row::table("Show FPS", on_off(self.gfx.show_fps), " "));
+                let g = self.gfx;
+                rows.push(Row::table("Fullscreen", on_off(g.fullscreen), "F11"));
+                rows.push(Row::table("Window size", &g.window_size_label(), if g.fullscreen { "(windowed only)" } else { " " }));
+                rows.push(Row::table("Max FPS", &g.max_fps_label(),
+                    if g.vsync && g.max_fps_value() != 60 { "VSync caps to display rate" } else { " " }));
+                rows.push(Row::table("VSync", on_off(g.vsync), "applies on restart"));
+                rows.push(Row::table("Anti-aliasing", on_off(g.antialiasing), "2x supersampling"));
+                rows.push(Row::table("Bloom / glow", LEVEL_NAMES[g.bloom], " "));
+                rows.push(Row::table("CRT warp", LEVEL_NAMES[g.curvature], " "));
+                rows.push(Row::table("Scanlines", LEVEL_NAMES[g.scanlines], " "));
+                rows.push(Row::table("Show FPS", on_off(g.show_fps), " "));
                 rows.push(Row::label("Back"));
             }
         }
@@ -338,9 +365,13 @@ impl Game {
                         self.gfx.window_scale = (self.gfx.window_scale + 1) % crate::graphics::WINDOW_SCALES.len();
                         self.gfx.apply_window();
                     }
-                    2 => self.gfx.vsync = !self.gfx.vsync,
-                    3 => self.gfx.antialiasing = !self.gfx.antialiasing,
-                    4 => self.gfx.show_fps = !self.gfx.show_fps,
+                    2 => self.gfx.max_fps = (self.gfx.max_fps + 1) % crate::graphics::MAX_FPS.len(),
+                    3 => self.gfx.vsync = !self.gfx.vsync,
+                    4 => self.gfx.antialiasing = !self.gfx.antialiasing,
+                    5 => self.gfx.bloom = (self.gfx.bloom + 1) % 4,
+                    6 => self.gfx.curvature = (self.gfx.curvature + 1) % 4,
+                    7 => self.gfx.scanlines = (self.gfx.scanlines + 1) % 4,
+                    8 => self.gfx.show_fps = !self.gfx.show_fps,
                     _ => { self.settings_back(); return; }
                 }
                 self.gfx.save();
@@ -421,9 +452,10 @@ impl Game {
     }
 
     // ── drawing ────────────────────────────────────────────────────
-    fn draw(&self) {
+    fn draw(&mut self) {
         clear_background(BLACK); // whole window, including the letterbox bars
-        set_camera(&self.view.camera());
+        let rs = self.post.begin(&self.view, &self.gfx); // everything below goes to the offscreen scene
+        set_text_scale(rs);
         for a in &self.asteroids { a.draw(); }
         for l in &self.lasers { l.draw(); }
         for u in &self.ufos { u.draw(); }
@@ -454,9 +486,9 @@ impl Game {
             State::Settings => { dim(); self.settings.draw(); }
         }
         if self.gfx.show_fps {
-            draw_text_top(&format!("{} FPS", get_fps()), SCREEN_W - 90.0, SCREEN_H - 28.0, 18.0, GRAY);
+            draw_text_top(&format!("{} FPS", get_fps()), SCREEN_W - 100.0, SCREEN_H - 28.0, 18.0, GRAY);
         }
-        set_default_camera();
+        self.post.present(&self.view, &self.gfx);
     }
 
     fn draw_hud(&self) {
