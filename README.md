@@ -19,10 +19,19 @@ cargo run --release
 ```
 For DualSense feedback on Linux the pad's hidraw node must be accessible to your user (a udev rule, or run with access to `/dev/hidraw*`).
 
-## Controls (remappable in Settings)
-Rotate: Left/Right (D-pad or left stick). Accelerate / Brake: Up/Down. Fire: Space (A, or R2 on a gamepad). Pause: Esc / Start. Menus: arrows/W/S + Enter, or D-pad + A (B/Esc = back). Bindings and options are saved to `controls.cfg` in the working directory.
+## Controls (remappable in Settings -> Controls)
+- **Rotate-keys aim (classic):** Left/Right rotate, Up accelerate, Down brake (D-pad or left stick on a pad).
+- **Mouse aim:** the ship faces the cursor (red crosshair); **W/A/S/D move the ship** in screen directions and it eases to a stop when you let go; left click fires.
+- **Right-stick aim:** right stick aims, **left stick / D-pad / WASD move** the same way.
+- Fire: Space or left click (mouse aim) / A / R2. Pause: Esc / Start. F11: toggle fullscreen.
 
-**Settings -> Aim with** cycles *Rotate keys* / *Right stick* / *Mouse* (ship faces the cursor, left click fires). In the stick and mouse modes the rotate keys are ignored.
+*Settings -> Controls -> Aim with* cycles the three aim modes; the classic rotate keys are ignored in the stick and mouse modes, and the Move keys are used instead. Every binding (including the WASD Move keys) can be remapped; options are saved to `controls.cfg`.
+
+## Mouse UI
+Menus work entirely with the mouse: hover highlights a row, click activates it (settings rows toggle/cycle on click, a click on a controls row starts a rebind), the wheel moves the selection and right-click goes back. Keyboard and gamepad navigation still work.
+
+## Graphics (Settings -> Graphics, saved to `graphics.cfg`)
+Fullscreen, window size (0.8x / 1x / 1.25x / 1.5x), VSync and anti-aliasing (both apply on restart) and an FPS counter. The window is resizable; the 4:3 game is scaled and letterboxed to fit, so fullscreen on a wide monitor shows black bars rather than stretching.
 
 ## Class hierarchy
 Rust has no class inheritance, so the tree is a chain of traits - each a supertrait of the one above - with shared state in a `RigidBody` struct (`src/objects.rs`):

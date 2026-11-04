@@ -250,6 +250,7 @@ pub struct Spaceship {
     cooldown: f32,
     brake: f32,
     thrusting: bool,
+    thrust_angle: f32, // direction of the current thrust (for the flame)
     fired: bool,
     shots: Vec<Laser>,
 }
@@ -263,7 +264,7 @@ impl Spaceship {
     pub fn new() -> Self {
         let mut rb = RigidBody::new(Vec2::new(SCREEN_W / 2.0, SCREEN_H / 2.0), BLUE, 12.0);
         rb.rotation = -PI / 2.0; // pointing up
-        Self { rb, score: 0, lives: 3, invuln_timer: 3.0, cooldown: 0.0, brake: 0.0, thrusting: false, fired: false, shots: Vec::new() }
+        Self { rb, score: 0, lives: 3, invuln_timer: 3.0, cooldown: 0.0, brake: 0.0, thrusting: false, thrust_angle: -PI / 2.0, fired: false, shots: Vec::new() }
     }
 
     pub fn position(&self) -> Vec2 { self.rb.position }
@@ -300,11 +301,23 @@ impl Controllable for Spaceship {
             }
         }
 
-        let thrust = input.strength(Action::Thrust);
-        self.thrusting = thrust > 0.0;
         let dir = Vec2::new(self.rb.rotation.cos(), self.rb.rotation.sin());
-        self.rb.velocity += dir * Self::THRUST * thrust * dt;
-        self.brake = input.strength(Action::Brake);
+        if input.aim == AimMode::Keys {
+            // Classic: thrust along the heading, brake damps velocity.
+            let thrust = input.strength(Action::Thrust);
+            self.thrusting = thrust > 0.0;
+            self.thrust_angle = self.rb.rotation;
+            self.rb.velocity += dir * Self::THRUST * thrust * dt;
+            self.brake = input.strength(Action::Brake);
+        } else {
+            // Twin-stick: WASD / left stick move the ship in screen directions; it eases to a stop
+            // when you let go.
+            let m = input.move_vector();
+            self.thrusting = m.length() > 0.0;
+            if self.thrusting { self.thrust_angle = m.y.atan2(m.x); }
+            self.rb.velocity += m * Self::THRUST * dt;
+            self.brake = if self.thrusting { 0.0 } else { 0.6 };
+        }
 
         self.cooldown -= dt;
         if input.fire_down() && self.cooldown <= 0.0 {
@@ -344,9 +357,10 @@ impl Drawable for Spaceship {
             draw_line(a.x, a.y, b.x, b.y, 2.5, c);
         }
         if self.thrusting && ((get_time() * 30.0) as i64 % 2 == 1) {
-            let tip = polar(pos, rot + PI, r * 1.6);
+            let fa = self.thrust_angle + PI;
+            let tip = polar(pos, fa, r * 1.6);
             for off in [0.4, -0.4] {
-                let base = polar(pos, rot + PI + off, r * 0.8);
+                let base = polar(pos, fa + off, r * 0.8);
                 draw_line(base.x, base.y, tip.x, tip.y, 2.0, SKYBLUE);
             }
         }

@@ -1,3 +1,4 @@
+use crate::graphics::{Graphics, View};
 use crate::haptics::{Haptics, TriggerMode};
 use crate::input::{key_name, button_name, AimMode, Input, MenuNav, ACTIONS};
 use crate::objects::*;
@@ -7,6 +8,9 @@ use macroquad::rand::gen_range;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum State { Title, Playing, Paused, GameOver, Settings }
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Page { Hub, Controls, Graphics }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Mode { Classic, Ufo }
@@ -39,12 +43,14 @@ pub struct Game {
     settings: Menu,
     haptics: Haptics,
     cursor_hidden: bool,
+    gfx: Graphics,
+    view: View,
+    page: Page,
 }
 
 impl Game {
-    pub fn new() -> Self {
-        let mut settings = Menu::new("CONTROLS", 70.0, &[]);
-        settings.hint = "ENTER / A: change    ESC / B: back    (press a key or pad button when prompted, ESC cancels)".into();
+    pub fn new(gfx: Graphics) -> Self {
+        let settings = Menu::new("SETTINGS", 70.0, &[]);
         let mut g = Self {
             ship: None, asteroids: vec![], lasers: vec![], ufos: vec![],
             level: 0, banner_timer: 0.0, death_timer: 0.0, ufo_timer: 0.0, mode: Mode::Classic,
@@ -56,6 +62,9 @@ impl Game {
             settings,
             haptics: Haptics::new(),
             cursor_hidden: false,
+            gfx,
+            view: View::fit(SCREEN_W, SCREEN_H),
+            page: Page::Hub,
         };
         g.show_title();
         g
@@ -64,7 +73,13 @@ impl Game {
     /// One frame. Returns false when the game wants to quit.
     pub fn frame(&mut self) -> bool {
         let dt = get_frame_time().min(0.05);
-        self.input.poll();
+        self.view = View::fit(screen_width(), screen_height());
+        if is_key_pressed(KeyCode::F11) {
+            self.gfx.fullscreen = !self.gfx.fullscreen;
+            self.gfx.save();
+            self.gfx.apply_window();
+        }
+        self.input.poll(&self.view);
         self.nav.poll(&self.input);
         self.update(dt);
         self.update_feedback(dt);
@@ -119,6 +134,7 @@ impl Game {
         self.settings_return = from;
         self.settings.selected = 0;
         self.capturing = false;
+        self.page = Page::Hub;
         self.state = State::Settings;
     }
 
@@ -216,23 +232,67 @@ impl Game {
         }
     }
 
+    fn set_page(&mut self, page: Page) {
+        self.page = page;
+        self.settings.selected = 0;
+    }
+
+    fn settings_back(&mut self) {
+        match self.page {
+            Page::Hub => self.state = self.settings_return,
+            _ => self.set_page(Page::Hub),
+        }
+    }
+
+    /// Rebuild the settings rows for the current page (values change as options are toggled).
+    fn build_settings_rows(&mut self) {
+        let on_off = |b: bool| if b { "On" } else { "Off" };
+        let (spacing, first_row, title, hint) = match self.page {
+            Page::Hub => (44.0, 100.0, "SETTINGS", "Click, or ENTER / A to open    ESC / B / right-click: back"),
+            Page::Controls => (34.0, 90.0, "CONTROLS",
+                "ENTER / A / click: change    ESC / B: back    Move keys are used with stick / mouse aim    (ESC cancels a rebind)"),
+            Page::Graphics => (44.0, 100.0, "GRAPHICS", "ENTER / A / click: change    F11: fullscreen anywhere    ESC / B: back"),
+        };
+        self.settings.title = title.into();
+        self.settings.hint = hint.into();
+        self.settings.spacing = spacing;
+        self.settings.first_row = first_row;
+        let rows = &mut self.settings.rows;
+        rows.clear();
+        match self.page {
+            Page::Hub => {
+                rows.push(Row::label("Controls"));
+                rows.push(Row::label("Graphics"));
+                rows.push(Row::label("Back"));
+            }
+            Page::Controls => {
+                for (i, a) in ACTIONS.iter().enumerate() {
+                    let b = self.input.binding(*a);
+                    let (mut key, mut btn) = (key_name(b.key), button_name(b.button));
+                    if self.capturing && self.settings.selected == i { key = "press key / button...".into(); btn = key.clone(); }
+                    rows.push(Row::table(a.name(), &key, &btn));
+                }
+                rows.push(Row::table("Aim with", self.input.aim.name(), " "));
+                rows.push(Row::table("Vibration", on_off(self.input.vibration),
+                    if self.haptics.connected() { "DualSense found" } else { "no DualSense found" }));
+                rows.push(Row::table("Adaptive triggers (R2)", on_off(self.input.adaptive_triggers), "DualSense only"));
+                rows.push(Row::label("Reset controls to defaults"));
+                rows.push(Row::label("Back"));
+            }
+            Page::Graphics => {
+                rows.push(Row::table("Fullscreen", on_off(self.gfx.fullscreen), "F11"));
+                rows.push(Row::table("Window size", &self.gfx.window_size_label(), if self.gfx.fullscreen { "(windowed only)" } else { " " }));
+                rows.push(Row::table("VSync", on_off(self.gfx.vsync), "applies on restart"));
+                rows.push(Row::table("Anti-aliasing", on_off(self.gfx.antialiasing), "applies on restart"));
+                rows.push(Row::table("Show FPS", on_off(self.gfx.show_fps), " "));
+                rows.push(Row::label("Back"));
+            }
+        }
+    }
+
     fn update_settings(&mut self, dt: f32) {
         self.settings.update(dt);
-        let n_act = ACTIONS.len();
-        self.settings.rows.clear();
-        for (i, a) in ACTIONS.iter().enumerate() {
-            let b = self.input.binding(*a);
-            let (mut key, mut btn) = (key_name(b.key), button_name(b.button));
-            if self.capturing && self.settings.selected == i { key = "press key / button...".into(); btn = key.clone(); }
-            self.settings.rows.push(Row::table(a.name(), &key, &btn));
-        }
-        let on_off = |b: bool| if b { "On" } else { "Off" };
-        self.settings.rows.push(Row::table("Aim with", self.input.aim.name(), " "));
-        self.settings.rows.push(Row::table("Vibration", on_off(self.input.vibration),
-            if self.haptics.connected() { "DualSense found" } else { "no DualSense found" }));
-        self.settings.rows.push(Row::table("Adaptive triggers (R2)", on_off(self.input.adaptive_triggers), "DualSense only"));
-        self.settings.rows.push(Row::label("Reset controls to defaults"));
-        self.settings.rows.push(Row::label("Back"));
+        self.build_settings_rows();
 
         if self.capturing {
             let a = ACTIONS[self.settings.selected];
@@ -245,22 +305,46 @@ impl Game {
             return;
         }
 
-        if self.nav.back { self.state = self.settings_return; return; }
+        if self.nav.back { self.settings_back(); return; }
         let Some(act) = self.settings.handle(&self.nav) else { return };
-        if act < n_act {
-            self.capturing = true;
-            clear_input_queue(); // so the Enter that opened capture isn't bound
-        } else if act == n_act {
-            self.input.aim = self.input.aim.next(); self.input.save();
-        } else if act == n_act + 1 {
-            self.input.vibration = !self.input.vibration; self.input.save();
-            if self.input.vibration { self.haptics.rumble(0.5, 0.5, 0.15); } // sample buzz
-        } else if act == n_act + 2 {
-            self.input.adaptive_triggers = !self.input.adaptive_triggers; self.input.save();
-        } else if act == n_act + 3 {
-            self.input.reset_defaults(); self.input.save();
-        } else {
-            self.state = self.settings_return;
+        let n = ACTIONS.len();
+        match self.page {
+            Page::Hub => match act {
+                0 => self.set_page(Page::Controls),
+                1 => self.set_page(Page::Graphics),
+                _ => self.settings_back(),
+            },
+            Page::Controls => {
+                if act < n {
+                    self.capturing = true;
+                    clear_input_queue(); // so the Enter that opened capture isn't bound
+                } else if act == n {
+                    self.input.aim = self.input.aim.next(); self.input.save();
+                } else if act == n + 1 {
+                    self.input.vibration = !self.input.vibration; self.input.save();
+                    if self.input.vibration { self.haptics.rumble(0.5, 0.5, 0.15); } // sample buzz
+                } else if act == n + 2 {
+                    self.input.adaptive_triggers = !self.input.adaptive_triggers; self.input.save();
+                } else if act == n + 3 {
+                    self.input.reset_defaults(); self.input.save();
+                } else {
+                    self.settings_back();
+                }
+            }
+            Page::Graphics => {
+                match act {
+                    0 => { self.gfx.fullscreen = !self.gfx.fullscreen; self.gfx.apply_window(); }
+                    1 => {
+                        self.gfx.window_scale = (self.gfx.window_scale + 1) % crate::graphics::WINDOW_SCALES.len();
+                        self.gfx.apply_window();
+                    }
+                    2 => self.gfx.vsync = !self.gfx.vsync,
+                    3 => self.gfx.antialiasing = !self.gfx.antialiasing,
+                    4 => self.gfx.show_fps = !self.gfx.show_fps,
+                    _ => { self.settings_back(); return; }
+                }
+                self.gfx.save();
+            }
         }
     }
 
@@ -338,7 +422,8 @@ impl Game {
 
     // ── drawing ────────────────────────────────────────────────────
     fn draw(&self) {
-        clear_background(BLACK);
+        clear_background(BLACK); // whole window, including the letterbox bars
+        set_camera(&self.view.camera());
         for a in &self.asteroids { a.draw(); }
         for l in &self.lasers { l.draw(); }
         for u in &self.ufos { u.draw(); }
@@ -346,7 +431,7 @@ impl Game {
 
         if self.ship.is_some() && self.state != State::Title { self.draw_hud(); }
         if self.state == State::Playing && self.input.aim == AimMode::Mouse {
-            let (mx, my) = mouse_position();
+            let (mx, my) = (self.input.mouse.x, self.input.mouse.y);
             draw_circle_lines(mx, my, 10.0, 1.5, RED);
             draw_line(mx - 16.0, my, mx + 16.0, my, 1.5, RED);
             draw_line(mx, my - 16.0, mx, my + 16.0, 1.5, RED);
@@ -368,6 +453,10 @@ impl Game {
             }
             State::Settings => { dim(); self.settings.draw(); }
         }
+        if self.gfx.show_fps {
+            draw_text_top(&format!("{} FPS", get_fps()), SCREEN_W - 90.0, SCREEN_H - 28.0, 18.0, GRAY);
+        }
+        set_default_camera();
     }
 
     fn draw_hud(&self) {

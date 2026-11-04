@@ -1,12 +1,16 @@
 //! Input layer: logical actions -> keyboard key / gamepad button (remappable), plus fixed
 //! menu navigation that can never be remapped away. Gamepads come from `gilrs` (pure Rust).
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
+use crate::graphics::View;
 use macroquad::prelude::*;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Action { RotateLeft, RotateRight, Thrust, Brake, Fire }
+pub enum Action { RotateLeft, RotateRight, Thrust, Brake, Fire, MoveUp, MoveDown, MoveLeft, MoveRight }
 
-pub const ACTIONS: [Action; 5] = [Action::RotateLeft, Action::RotateRight, Action::Thrust, Action::Brake, Action::Fire];
+pub const ACTIONS: [Action; 9] = [
+    Action::RotateLeft, Action::RotateRight, Action::Thrust, Action::Brake, Action::Fire,
+    Action::MoveUp, Action::MoveDown, Action::MoveLeft, Action::MoveRight,
+];
 
 impl Action {
     pub fn name(self) -> &'static str {
@@ -16,8 +20,16 @@ impl Action {
             Action::Thrust => "Accelerate",
             Action::Brake => "Brake",
             Action::Fire => "Fire",
+            Action::MoveUp => "Move Up (stick/mouse aim)",
+            Action::MoveDown => "Move Down",
+            Action::MoveLeft => "Move Left",
+            Action::MoveRight => "Move Right",
         }
     }
+    /// Move actions are used with stick/mouse aim, the others with rotate-key aim (Fire with both).
+    /// Rebinding only swaps with actions in the same group.
+    fn is_move(self) -> bool { matches!(self, Action::MoveUp | Action::MoveDown | Action::MoveLeft | Action::MoveRight) }
+    fn conflicts_with(self, other: Action) -> bool { self == Action::Fire || other == Action::Fire || self.is_move() == other.is_move() }
     fn index(self) -> usize { ACTIONS.iter().position(|a| *a == self).unwrap() }
 }
 
@@ -96,19 +108,29 @@ pub struct Input {
     gilrs: Option<Gilrs>,
     pad: Option<GamepadId>,
     pressed: Vec<Button>, // buttons that went down this frame
-    bindings: [Binding; 5],
+    bindings: [Binding; 9],
     pub aim: AimMode,
     pub vibration: bool,
     pub adaptive_triggers: bool,
+    // mouse, in game-space coordinates
+    pub mouse: Vec2,
+    pub mouse_moved: bool,
+    pub clicked: bool,
+    pub right_clicked: bool,
+    pub wheel: f32,
 }
 
-fn default_bindings() -> [Binding; 5] {
+fn default_bindings() -> [Binding; 9] {
     [
         Binding { key: KeyCode::Left, button: Some(Button::DPadLeft) },
         Binding { key: KeyCode::Right, button: Some(Button::DPadRight) },
         Binding { key: KeyCode::Up, button: Some(Button::DPadUp) },
         Binding { key: KeyCode::Down, button: Some(Button::DPadDown) },
         Binding { key: KeyCode::Space, button: Some(Button::South) },
+        Binding { key: KeyCode::W, button: Some(Button::DPadUp) },
+        Binding { key: KeyCode::S, button: Some(Button::DPadDown) },
+        Binding { key: KeyCode::A, button: Some(Button::DPadLeft) },
+        Binding { key: KeyCode::D, button: Some(Button::DPadRight) },
     ]
 }
 
@@ -122,13 +144,26 @@ impl Input {
             aim: AimMode::Keys,
             vibration: true,
             adaptive_triggers: true,
+            mouse: Vec2::ZERO,
+            mouse_moved: false,
+            clicked: false,
+            right_clicked: false,
+            wheel: 0.0,
         };
         s.load();
         s
     }
 
     /// Call once per frame: pumps gamepad events and records this frame's button presses.
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self, view: &View) {
+        let (mx, my) = mouse_position();
+        let m = view.to_world(Vec2::new(mx, my));
+        self.mouse_moved = m.distance(self.mouse) > 0.5;
+        self.mouse = m;
+        self.clicked = is_mouse_button_pressed(MouseButton::Left);
+        self.right_clicked = is_mouse_button_pressed(MouseButton::Right);
+        self.wheel = mouse_wheel().1;
+
         self.pressed.clear();
         if let Some(g) = self.gilrs.as_mut() {
             while let Some(ev) = g.next_event() {
@@ -163,14 +198,14 @@ impl Input {
     pub fn set_key(&mut self, a: Action, key: KeyCode) {
         let old = self.bindings[a.index()].key;
         for (i, b) in self.bindings.iter_mut().enumerate() {
-            if i != a.index() && b.key == key { b.key = old; }
+            if i != a.index() && ACTIONS[i].conflicts_with(a) && b.key == key { b.key = old; }
         }
         self.bindings[a.index()].key = key;
     }
     pub fn set_button(&mut self, a: Action, button: Button) {
         let old = self.bindings[a.index()].button;
         for (i, b) in self.bindings.iter_mut().enumerate() {
-            if i != a.index() && b.button == Some(button) { b.button = old; }
+            if i != a.index() && ACTIONS[i].conflicts_with(a) && b.button == Some(button) { b.button = old; }
         }
         self.bindings[a.index()].button = Some(button);
     }
@@ -191,11 +226,24 @@ impl Input {
             Action::RotateRight => x,
             Action::Thrust => y,
             Action::Brake => -y,
+            Action::MoveUp => y,
+            Action::MoveDown => -y,
+            Action::MoveLeft => -x,
+            Action::MoveRight => x,
             Action::Fire => return 0.0, // Fire has no stick binding
         };
         if v < DEADZONE { 0.0 } else { ((v - DEADZONE) / (1.0 - DEADZONE)).min(1.0) }
     }
     pub fn down(&self, a: Action) -> bool { self.strength(a) > 0.5 }
+
+    /// Screen-space movement direction (y down), length 0..1, for stick/mouse aim modes.
+    pub fn move_vector(&self) -> Vec2 {
+        let v = Vec2::new(
+            self.strength(Action::MoveRight) - self.strength(Action::MoveLeft),
+            self.strength(Action::MoveDown) - self.strength(Action::MoveUp),
+        );
+        if v.length() > 1.0 { v.normalize() } else { v }
+    }
 
     /// Fire: the bound key/button, R2 on a pad, or left click in mouse-aim mode.
     pub fn fire_down(&self) -> bool {
@@ -213,8 +261,7 @@ impl Input {
                 if x.hypot(y) < 0.3 { None } else { Some(y.atan2(x)) } // radial deadzone
             }
             AimMode::Mouse => {
-                let (mx, my) = mouse_position();
-                let d = Vec2::new(mx, my) - from;
+                let d = self.mouse - from;
                 if d.length() < 8.0 { None } else { Some(d.y.atan2(d.x)) }
             }
             AimMode::Keys => None,
@@ -236,7 +283,7 @@ impl Input {
 
     // ── persistence ────────────────────────────────────────────────
     pub fn save(&self) {
-        let mut out = String::new();
+        let mut out = String::from("v2\n");
         for b in &self.bindings {
             let key = key_name(b.key);
             let btn = b.button.and_then(|x| BUTTONS.iter().find(|(c, _, _)| *c == x)).map(|(_, n, _)| *n).unwrap_or("none");
@@ -249,6 +296,7 @@ impl Input {
     fn load(&mut self) {
         let Ok(text) = std::fs::read_to_string(CONFIG_FILE) else { return };
         let mut lines = text.lines();
+        if lines.next() != Some("v2") { return; } // older/unknown format: keep defaults
         let mut loaded = default_bindings();
         for slot in loaded.iter_mut() {
             let Some(line) = lines.next() else { return };
@@ -274,6 +322,9 @@ impl Input {
 /// Menu navigation: arrows/W/S/Enter/Esc, or D-pad / left stick / A / B.
 #[derive(Default)]
 pub struct MenuNav {
+    pub mouse: Vec2,
+    pub mouse_moved: bool,
+    pub clicked: bool,
     pub up: bool,
     pub down: bool,
     pub confirm: bool,
@@ -289,7 +340,12 @@ impl MenuNav {
         self.up = is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) || input.pad_pressed(Button::DPadUp) || (stick_up && !self.prev_up);
         self.down = is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) || input.pad_pressed(Button::DPadDown) || (stick_down && !self.prev_down);
         self.confirm = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) || input.pad_pressed(Button::South);
-        self.back = is_key_pressed(KeyCode::Escape) || input.pad_pressed(Button::East);
+        self.back = is_key_pressed(KeyCode::Escape) || input.pad_pressed(Button::East) || input.right_clicked;
+        self.up |= input.wheel > 0.0;
+        self.down |= input.wheel < 0.0;
+        self.mouse = input.mouse;
+        self.mouse_moved = input.mouse_moved;
+        self.clicked = input.clicked;
         self.prev_up = stick_up;
         self.prev_down = stick_down;
     }
